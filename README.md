@@ -46,7 +46,7 @@ But this implementation is the worst in terms of memory usage:
 We could start by optimizing encoding, and encode only if it is necessary:
 
 ```cs
-static char[] ToEscape = new [] { ',', '\n', '\r' };
+static readonly char[] ToEscape = new [] { ',', '\n', '\r' };
 
 static string? Encode(string? value) => value switch
 {
@@ -156,9 +156,9 @@ writer.WriteValue(Guid.NewGuid().ToString()); // guid
 writer.WriteValue(DateTimeOffset.Now.ToString()); // date time
 ```
 
-This can be really wasteful, as the `string` we create exists only temporarily for the time of writing. But since it is a reference type, it would be circulating in the Garbage Collector for some time.
+This can be really wasteful, as the `string` we create exists only temporarily for the time of writing. But since it is a reference type, it would be circulating in the Garbage Collector for some time. Rendering a few hundreds or thousands of lines of CSV may put significant pressure on it.
 
-Fortunately, the `TextWriter` supports not only `Write(string)` but [Write(ReadOnlySpan<char>](https://docs.microsoft.com/en-us/dotnet/api/system.io.textwriter.write?#System_IO_TextWriter_Write_System_ReadOnlySpan_System_Char__) as well. Which means, we don't have to create a `String` every time, but we could reuse a `char` buffer for formatting:
+Fortunately, the `TextWriter` supports not only `Write(string)` but [Write(ReadOnlySpan&lt;char&gt;)](https://docs.microsoft.com/en-us/dotnet/api/system.io.textwriter.write?#System_IO_TextWriter_Write_System_ReadOnlySpan_System_Char__) as well. Which means, we don't have to create a `String` every time, but we could reuse a `char` buffer for formatting:
 ```cs
 private char[] FormatBuffer = new char[128];
 
@@ -183,8 +183,164 @@ public void WriteValue(int value)
 Introducing a buffer at instance level would break thread-safety, but `TextWriter` is not safe anyway, locking is the responsibility of the user.
 But with this improvement, we don't create any short-lived, temporal `String`s, but reuse the same buffer for each formatting.
 
-## Optimize: buffer management
+We might have some other choices like:
+ - Use an `ArrayPool<char>` to rent and reuse arrays, but since we don't have to support thread-safety, a dedicated buffer could be a better choice. Or, rent that buffer only once per instance.
+ - Use `stackalloc` and allocate a new array each time, but we could also reuse that buffer across invocations, so this is what we did by moving that buffer to instance level.
+
+## Optimize: buffer management and binary representation
+We made lots of improvements to the base implementation, but there is still a lot to go. We used the basic `Stream` and `StreamWriter` concept earlier, but betters concepts and tools appeared over the years. These concepts were replaced by [PipeWriter](https://docs.microsoft.com/en-us/dotnet/api/system.io.pipelines.pipewriter) which simplifies buffer management and thus provides more efficient operation.
+
+On the other hand, we want to go a level deeper. In the previous implementation, our unit was a `char` which is still not the raw binary data, since a single `char` can easily take up multiple `byte`s to represent. So, our new implementation has two dependencies, the underlying `PipeWriter` (which replaces the `TextWriter`), and an `Encoding` to be able to translate `char`s to `byte`s:
+
+```cs
+public CsvPipeWriter(PipeWriter writer, Encoding encoding)
+{
+    // ...
+}
+```
+
+The concept of Pipelines, is different than `Stream`s, they feel like they are turned inside out. Because, we don't &quot;write&quot;/&quot;send&quot; data, but we request and get a buffer from the `PipeWriter` where we can write some data.
+
+Let's take the following example, where we would like to write 1 byte:
+1. First, we request a buffer which is at least 1 byte long.
+2. We copy our data to the buffer.
+3. We signal that we wrote 1 byte.
+
+```cs
+private void WriteSeparator()
+{
+    var span = Writer.GetSpan(1);
+    span[0] = (byte)',';
+    Writer.Advance(1);
+}
+```
+
+Let's rewrite the earlier examples to use the `PipeWriter`, and also to translate to two layers deep:
+
+In case of `Guid`, it is easy, because we know exactly that a `Guid` is always represented by exactly 36 `char`s, no more. We also konw that these are simple letters and digits and hyphens, so basic ASCII encoding can be used, where each `char` is represented by a single `byte`:
+```cs
+public void WriteValue(Guid value)
+{
+    const int Length = 36;
+    EnsureSeparator();
+    value.TryFormat(formatBuffer, out _);
+    var span = Writer.GetSpan(Length);
+    Encoding.ASCII.GetBytes(formatBuffer.AsSpan(..Length), span);
+    Writer.Advance(Length);
+    shouldAppendSeparator = true;
+}
+```
+
+In case of `int`, we don't know how many characters we are going to need (we could surely do some math to calculate it), but we also konw that the result contains only digits, dot, comma, space, negative sign, so basic ASCII encoding can be used, where each `char` is represented by a single `byte`:
+```cs
+public void WriteValue(int value)
+{
+    EnsureSeparator();
+    value.TryFormat(formatBuffer, out var length);
+    var span = Writer.GetSpan(length);
+    Encoding.ASCII.GetBytes(formatBuffer.AsSpan(..length), span);
+    Writer.Advance(length);
+    shouldAppendSeparator = true;
+}
+```
+
+In case of a `string`, we don't know how many bytes we are going to need, because it depends on the encoding. But fortunately, we can ask the `Encoding` (more specifically the `Encoder`) about how many `byte`s are we going to need. The following example is simplified, it doesn't take CSV escaping (double quotes) into account.
+public void WriteValue(string? value)
+{
+    EnsureSeparator();
+    var length = Encoding.GetByteCount(value); // what size of buffer is needed?
+    var span = Writer.GetSpan(length);
+    Encoding.GetBytes(value, span); // format to bytes
+    Writer.Advance(length);
+    shouldAppendSeparator = true;
+}
+
+## Optimize: encoding (again)
+Our previous implementation of encoding CSV content was still wasteful, because we still had to materialize results into a short-lived `string`. So, we could spare that allocation and write directly the output buffer.
+
+```cs
+static readonly char[] ToEscape = new [] { ',', '"', '\n', '\r' };
+
+public void WriteValue(string? value)
+{
+    EnsureSeparator();
+    if (!String.IsNullOrEmpty(value))
+    {
+        // decide whether we have to escape or not
+        var firstToEscape = value.IndexOfAny(ToEscape);
+        if (firstToEscape == -1)
+        {
+            // no, write as is
+            var length = Encoding.GetByteCount(value);
+            var span = Writer.GetSpan(length);
+            Encoding.GetBytes(value, span);
+            Writer.Advance(length);
+        }
+        else
+        {
+            // yes, so add quotes
+            WriteQuote();
+
+            // decide which case it is
+            var shouldEscape = value[firstToEscape] == '"' || value.IndexOf('"', firstToEscape + 1) != -1;
+            if (shouldEscape)
+            {
+                // quotes must be escaped
+                // TODO: write in segments
+            }
+            else
+            {
+                // write value
+                var length = Encoding.GetByteCount(value);
+                var span = Writer.GetSpan(length);
+                Encoding.GetBytes(value, span);
+                Writer.Advance(length);
+            }
+
+            // add quotes
+            WriteQuote();
+        }
+    }
+    shouldAppendSeparator = true;
+}
+
+private void WriteQuote()
+{
+    var span = Writer.GetSpan(1);
+    span[0] = (byte)'"';
+    Writer.Advance(1);
+}
+```
+
+## Optimize: enumeration
+Instead of using [IEnumerable&quot;T&quot;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1), we can take advantage of [IAsyncEnumerable&quot;T&quot;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1), so the data source doesn't have to be buffer into memory all at once, but can be streamed:
+
+```cs
+public async Task WriteAsCsv<T>(IAsyncEnumerable<T> items, CsvWriter writer)
+{
+	var properties = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+    await foreach (var item in items)
+    {
+        foreach (var property in properties)
+        {
+            var value = property.GetValue(entry);
+            switch (value)
+            {
+                case int @int: writer.WriteValue(@int); break;
+                case Guid guid: writer.WriteValue(guid); break;
+                default: writer.WriteValue(value?.ToString());break;
+            }
+        }
+    }
+    await writer.FlushAsync();
+}
+```
+
+## Optimize: reflection (caching)
 TODO
 
-## Optimize: reflection
+## Optimize: reflection (emit)
+TODO
+
+## Optimize: reflection (source generators)
 TODO
