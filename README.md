@@ -17,23 +17,23 @@ Let's start with the shortest, probably the most straightforward implementation.
 The `Encode` function could look like this, we encode in all cases for the sake of simplicity:
 ```cs
 static string? Encode(string? value) =>
-	'"' + value?.Replace("\"", "\"\"") + '"';
+    '"' + value?.Replace("\"", "\"\"") + '"';
 ```
 
 And rendering the content would use simple query operators:
 ```cs
 static string ToCsv<T>(this IEnumerable<T> items, char separator = ',')
 {
-	var properties = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance);
-	var rows =
-		from row in items
-		select String.Join(separator, 
-			from property in properties
-			select Encode(property.GetValue(row))
-		)
-	;
-	var csv = String.Join(Environment.NewLine, rows);
-	return csv;
+    var properties = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+    var rows =
+        from row in items
+        select String.Join(separator, 
+            from property in properties
+            select Encode(property.GetValue(row))
+        )
+    ;
+    var csv = String.Join(Environment.NewLine, rows);
+    return csv;
 }
 ```
 
@@ -50,16 +50,16 @@ static readonly char[] ToEscape = new [] { ',', '\n', '\r' };
 
 static string? Encode(string? value) => value switch
 {
-	// null translates to an empty string
+    // null translates to an empty string
     null => String.Empty,
 
-	// worst case, we need to add quotes and replace double quotes as well
-    _ when value.Contains('"') => String.Concat('"', value.Replace("\"", "\"\""), '"'),
+    // worst case, we need to add quotes and replace double quotes as well
+    _ when value.Contains('"') => String.Join('"', value.Replace("\"", "\"\""), '"'),
 
-	// we don't need to replace, but must add quotes
-    _ when value.IndexOfAny(ToEscape) is not -1 => String.Concat('"', value, '"'),
+    // we don't need to replace, but must add quotes
+    _ when value.IndexOfAny(ToEscape) is not -1 => String.Join('"', value, '"'),
 
-	// no escaping needed
+    // no escaping needed
     _ => value
 };
 ```
@@ -71,7 +71,7 @@ we just let it flow through.
 ## Optimize: concatenation
 Our next target is the following:
 ```cs
-var line = String.Concat(',', properties.Select(p => Encode(p.GetValue(row))));
+var line = String.Join(',', properties.Select(p => Encode(p.GetValue(row))));
 ```
 
 We could create a `CsvWriter` like [XmlWriter](https://docs.microsoft.com/en-us/dotnet/api/system.xml.xmlwriter) or [Utf8JsonWriter](https://docs.microsoft.com/en-us/dotnet/api/system.text.json.utf8jsonwriter),
@@ -245,6 +245,7 @@ public void WriteValue(int value)
 ```
 
 In case of a `string`, we don't know how many bytes we are going to need, because it depends on the encoding. But fortunately, we can ask the `Encoding` (more specifically the `Encoder`) about how many `byte`s are we going to need. The following example is simplified, it doesn't take CSV escaping (double quotes) into account.
+```cs
 public void WriteValue(string? value)
 {
     EnsureSeparator();
@@ -254,6 +255,7 @@ public void WriteValue(string? value)
     Writer.Advance(length);
     shouldAppendSeparator = true;
 }
+```
 
 ## Optimize: encoding (again)
 Our previous implementation of encoding CSV content was still wasteful, because we still had to materialize results into a short-lived `string`. So, we could spare that allocation and write directly the output buffer.
@@ -313,12 +315,12 @@ private void WriteQuote()
 ```
 
 ## Optimize: enumeration
-Instead of using [IEnumerable&quot;T&quot;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1), we can take advantage of [IAsyncEnumerable&quot;T&quot;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1), so the data source doesn't have to be buffer into memory all at once, but can be streamed:
+Instead of using [IEnumerable&lt;T&gt;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.generic.ienumerable-1), we can take advantage of [IAsyncEnumerable&lt;T&gt;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.generic.iasyncenumerable-1), so the data source doesn't have to be buffer into memory all at once, but can be streamed:
 
 ```cs
 public async Task WriteAsCsv<T>(IAsyncEnumerable<T> items, CsvWriter writer)
 {
-	var properties = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance);
+    var properties = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance);
     await foreach (var item in items)
     {
         foreach (var property in properties)
@@ -331,16 +333,109 @@ public async Task WriteAsCsv<T>(IAsyncEnumerable<T> items, CsvWriter writer)
                 default: writer.WriteValue(value?.ToString());break;
             }
         }
+        writer.WriteLine();
     }
     await writer.FlushAsync();
 }
 ```
 
 ## Optimize: reflection (caching)
-TODO
+For each session, we query the properties of a given `Type` using Reflection:
+```cs
+static IReadOnlyList<PropertyInfo> GetProperties<T>() =>
+    typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+        .OrderBy(p => p.GetCustomAttribute<DisplayAttribute>()?.Order ?? 0)
+        .ToList()
+```
+
+But it can be expensive, even if it is called multiple times. So, assuming each view is described by a type, we could introduce a cache for the schema:
+```cs
+static readonly IDictionary<Type, IReadOnlyList<PropertyInfo>> SchemaCache =
+    new Dictionary<Type, IReadOnlyList<PropertyInfo>>();
+
+static readonly object SchemaCacheLock = new();
+
+static IReadOnlyList<PropertyInfo> GetSchema<T>()
+{
+    var type = typeof(T);
+    if (!SchemaCache.TryGetValue(type, out var schema))
+    {
+        schema = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .OrderBy(p => p.GetCustomAttribute<DisplayAttribute>()?.Order ?? 0)
+            .ToList()
+        lock (SchemaCacheLock) SchemaCache.Add(type, schema);
+    }
+    return schema;
+}
+```
+
+The reason we used a basic `Dictionary&lt;TKey, TValue&gt;` with (Monitor-based) locking instead of [ConcurrentDictionary&lt;TKey, TValue&gt;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2), is that the latter is best for scenarios where the data is accessed from multiple threads concurrently, but each thread has its own territory and usually accesses only its own partition of data in the dictionary. In case of a web application, where a request can arrive on any thread, this won't be the case.
 
 ## Optimize: reflection (emit)
-TODO
+In the previous example we optimized some Reflection calls, but the 90% of them are still left. We very heavily use Reflection when writing values:
+```cs
+foreach (var item in items)
+{
+    foreach (var property in properties)
+    {
+        var value = property.GetValue(entry); // here
+        writer.WriteValue(value?.ToString());
+    }
+    writer.WriteLine();
+}
+```
+
+What if we could have a specialized method for each type, which uses no Reflection and no loops, but does exactly what we want?
+```cs
+void WriteCsv(CsvWriter writer, Product product)
+{
+    writer.WriteValue(product.Id); // guid
+    writer.WriteValue(product.DisplayName); // string
+    writer.WriteValue(product.Description); // string
+    writer.WriteLine();
+}
+```
+
+[Emit](https://docs.microsoft.com/en-us/dotnet/api/system.reflection.emit) makes it possible to generate IL code at runtime.
+```cs
+static Action<CsvWriter, object> GenerateWriter<T>(MethodBuilder builder)
+{
+    var generator = builder.GetILGenerator();
+
+    // cast to T
+    generator.Emit(OpCodes.Ldarg_1); // load (instance from) argument index 1
+    generator.Emit(OpCodes.Castclass, typeof(T)); // cast to T
+    generator.Emit(OpCodes.Stloc_0); // store (casted) as variable 0
+
+    // write values
+    foreach (var property in properties)
+    {
+        generator.Emit(OpCodes.Ldarg_0); // load (writer from) argument index 0, prepare to call later
+        generator.Emit(OpCodes.Ldloc_0); // load (instance from) variable 0
+        generator.EmitCall(property.GetGetMethod()); // call property getter
+        if (property.PropertyType == typeof(string))
+        {
+            var writeStringValueMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteValue));
+            generator.EmitCall(writeStringValueMethod);
+        }
+        else if (property.PropertyType == typeof(Guid))
+        {
+            var writeGuidValueMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteValue));
+            generator.EmitCall(writeGuidValueMethod);
+        }
+            // TODO: handle other types
+        // value to write (the argument for WriteValue) is on the top of the stack at this position
+        generator.EmitCall(writeLineMethod); // call method
+    }
+
+    // write line
+    var writeLineMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteLine));
+    generator.Emit(OpCodes.Ldarg_0); // load (writer from) argument index 0
+    generator.EmitCall(writeLineMethod); // call method
+
+    return builder.CreateDelegate<Action<CsvWriter, object>>();
+}
+```
 
 ## Optimize: reflection (source generators)
 TODO
