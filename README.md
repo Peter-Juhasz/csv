@@ -369,23 +369,27 @@ static IReadOnlyList<PropertyInfo> GetSchema<T>()
 }
 ```
 
-The reason we used a basic `Dictionary&lt;TKey, TValue&gt;` with (Monitor-based) locking instead of [ConcurrentDictionary&lt;TKey, TValue&gt;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2), is that the latter is best for scenarios where the data is accessed from multiple threads concurrently, but each thread has its own territory and usually accesses only its own partition of data in the dictionary. In case of a web application, where a request can arrive on any thread, this won't be the case.
+The reason we used a basic `Dictionary<TKey, TValue>` with (Monitor-based) locking instead of [ConcurrentDictionary&lt;TKey, TValue&gt;](https://docs.microsoft.com/en-us/dotnet/api/system.collections.concurrent.concurrentdictionary-2), is that the latter is best for scenarios where the data is accessed from multiple threads concurrently, but each thread has its own territory and usually accesses only its own partition of data in the dictionary. In case of a web application, where a request can arrive on any thread, this won't be the case.
 
 ## Optimize: reflection (emit)
 In the previous example we optimized some Reflection calls, but the 90% of them are still left. We very heavily use Reflection when writing values:
 ```cs
 foreach (var item in items)
 {
-    foreach (var property in properties)
+    foreach (var property in properties) // loop
     {
-        var value = property.GetValue(entry); // here
+        var value = property.GetValue(entry); // reflection
         writer.WriteValue(value?.ToString());
     }
     writer.WriteLine();
 }
 ```
 
-What if we could have a specialized method for each type, which uses no Reflection and no loops, but does exactly what we want?
+Note:
+ - It may be well hidden, but the enumeration of the `properties` collection would allocate an `IEnumerator<PropertyInfo` each time, basically for each and every row. Which puts even more pressure to the Garbage Collector.
+ - Another well hidden but significant part is, since these types are not bound at compile time but runtime, [GetValue](https://docs.microsoft.com/en-us/dotnet/api/system.reflection.propertyinfo.getvalue) returns an `object` in general, and then we have to cast manually to the type we know we need. But this means that even if a property has type of a value type like `int`, `Guid` or `DateTimeOffset`, it is going to be inevitable boxed, so it lands on the heap and a new reference is allocated.
+
+What if we could have a method for each type, which uses no Reflection (and no boxing) and no loops (so no allocation of `IEnumerator<T>`), but is specialized and does exactly what we want?
 ```cs
 void WriteCsv(CsvWriter writer, Product product)
 {
@@ -396,7 +400,7 @@ void WriteCsv(CsvWriter writer, Product product)
 }
 ```
 
-[Emit](https://docs.microsoft.com/en-us/dotnet/api/system.reflection.emit) makes it possible to generate IL code at runtime.
+Reflection [Emit](https://docs.microsoft.com/en-us/dotnet/api/system.reflection.emit) makes it possible to generate IL code at runtime. So we could generate this specialized method the very first time we meet a new type, and then cache it and use it to render each line:
 ```cs
 static Action<CsvWriter, object> GenerateWriter<T>(MethodBuilder builder)
 {
@@ -415,12 +419,12 @@ static Action<CsvWriter, object> GenerateWriter<T>(MethodBuilder builder)
         generator.EmitCall(property.GetGetMethod()); // call property getter
         if (property.PropertyType == typeof(string))
         {
-            var writeStringValueMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteValue));
+            var writeStringValueMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteValue), new [] { typeof(string) });
             generator.EmitCall(writeStringValueMethod);
         }
         else if (property.PropertyType == typeof(Guid))
         {
-            var writeGuidValueMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteValue));
+            var writeGuidValueMethod = typeof(CsvWriter).GetMethod(nameof(CsvWriter.WriteValue), new [] { typeof(Guid) });
             generator.EmitCall(writeGuidValueMethod);
         }
             // TODO: handle other types
@@ -437,5 +441,102 @@ static Action<CsvWriter, object> GenerateWriter<T>(MethodBuilder builder)
 }
 ```
 
+Caching would look like this:
+```cs
+IDictionary<Type, Action<CsvWriter, object>> _writerCache = new();
+```
+
 ## Optimize: reflection (source generators)
-TODO
+
+
+We could have an `interface` which marks a `class` (or `record`) as capable to serialize itself as CSV:
+```cs
+public interface ICsvSerializable
+{
+    void Serialize(CsvWriter writer);
+}
+```
+
+```cs
+public record ProductCsvView(
+    Guid Id,
+    string Name,
+    int Price
+)
+{ }
+```
+
+```cs
+public record ProductCsvView(
+    Guid Id,
+    string Name,
+    int Price
+) : ICsvSerializable
+{
+    void ICsvSerializable.Serialize(CsvWriter writer)
+    {
+        writer.WriteValue(Id);
+        writer.WriteValue(Name);
+        writer.WriteValue(Price);
+        writer.WriteLine();
+    }
+}
+```
+
+Let's define an `Attribute` with which we want to mark classes.
+```cs
+[AttributeUsage(AttributeTargets.Property, Inherited = false, AllowMultiple = false)]
+public class CsvViewAttribute : Attribute
+{
+}
+```
+
+So, a class would look like this:
+```cs
+[CsvView]
+public record ProductCsvView(
+    Guid Id,
+    string Name,
+    int Price
+)
+{ }
+```
+
+Now, we 
+```cs
+class CsvSyntaxReceiver : ISyntaxContextReceiver
+{
+    private List<ClassDeclarationSyntax> _classes = new();
+    public IReadOnlyList<ClassDeclarationSyntax> Classes => _classes;
+
+    public void OnVisitSyntaxNode(GeneratorSyntaxContext context)
+    {
+        if (context.Node is ClassDeclarationSyntax @class)
+        {
+            _classes.Add(@class);
+        }
+    }
+}
+```
+
+And then, the generator:
+```cs
+[Generator]
+public class CsvWriterGenerator : ISourceGenerator
+{
+    public void Initialize(GeneratorInitializationContext context)
+    {
+        // add visitor to find applicable classes
+        context.RegisterForSyntaxNotifications(() => new CsvSyntaxReceiver());
+    }
+
+    public void Execute(GeneratorExecutionContext context)
+    {
+        // find types
+
+        // generate
+
+    }
+
+}
+```
