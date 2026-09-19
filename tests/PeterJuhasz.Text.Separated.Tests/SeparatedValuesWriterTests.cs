@@ -1,5 +1,4 @@
 ﻿using System.IO.Pipelines;
-using System.Text;
 
 namespace System.Text.Separated.Tests;
 

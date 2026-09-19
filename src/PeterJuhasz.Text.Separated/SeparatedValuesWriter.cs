@@ -2,7 +2,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Pipelines;
 using System.Reflection;
-using System.Text;
 
 namespace System.Text.Separated;
 
