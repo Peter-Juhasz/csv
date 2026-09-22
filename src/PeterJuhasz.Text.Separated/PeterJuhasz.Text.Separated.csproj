@@ -5,7 +5,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<TreatWarningsAsErrors>true</TreatWarningsAsErrors>
-		<RootNamespace>System.Text.Separated</RootNamespace>
+		<RootNamespace>PeterJuhasz.Text.Separated</RootNamespace>
 	</PropertyGroup>
 
 	<PropertyGroup>

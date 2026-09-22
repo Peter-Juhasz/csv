@@ -1,4 +1,4 @@
-﻿namespace System.Text.Separated;
+﻿namespace PeterJuhasz.Text.Separated;
 
 public record class SeparatedValuesReaderOptions(
 	bool HasHeader = true,

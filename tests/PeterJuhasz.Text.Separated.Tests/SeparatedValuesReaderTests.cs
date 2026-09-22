@@ -1,4 +1,6 @@
-﻿namespace System.Text.Separated.Tests;
+﻿using System.Text;
+
+namespace PeterJuhasz.Text.Separated.Tests;
 
 [TestClass]
 public class SeparatedValuesReaderTests

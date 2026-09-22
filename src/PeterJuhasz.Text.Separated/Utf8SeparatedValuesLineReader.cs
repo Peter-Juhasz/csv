@@ -1,7 +1,8 @@
 ﻿using System.Buffers;
 using System.Buffers.Text;
+using System.Text;
 
-namespace System.Text.Separated;
+namespace PeterJuhasz.Text.Separated;
 
 public ref struct Utf8SeparatedValuesLineReader
 {

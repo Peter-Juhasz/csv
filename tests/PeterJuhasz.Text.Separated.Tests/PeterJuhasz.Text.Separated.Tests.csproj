@@ -5,7 +5,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<TreatWarningsAsErrors>True</TreatWarningsAsErrors>
-		<RootNamespace>System.Text.Separated.Tests</RootNamespace>
+		<RootNamespace>PeterJuhasz.Text.Separated.Tests</RootNamespace>
 
 		<IsPackable>false</IsPackable>
 		<IsTestProject>true</IsTestProject>

@@ -4,7 +4,7 @@ using System.IO.Pipelines;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
-namespace System.Text.Separated;
+namespace PeterJuhasz.Text.Separated;
 
 [RequiresUnreferencedCode("Uses reflection to create generic types at runtime.")]
 public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func<object[], T>? factory = null)

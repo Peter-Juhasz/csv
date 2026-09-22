@@ -1,4 +1,4 @@
-﻿namespace System.Text.Separated;
+﻿namespace PeterJuhasz.Text.Separated;
 
 public readonly record struct SeparatedValuesWriterOptions(
 	bool HasHeader = true,

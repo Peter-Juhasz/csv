@@ -2,8 +2,9 @@
 using System.Diagnostics.CodeAnalysis;
 using System.IO.Pipelines;
 using System.Reflection;
+using System.Text;
 
-namespace System.Text.Separated;
+namespace PeterJuhasz.Text.Separated;
 
 [RequiresUnreferencedCode("Uses reflection to create generic types at runtime.")]
 public class SeparatedValuesWriter(PipeWriter writer, SeparatedValuesWriterOptions options)
