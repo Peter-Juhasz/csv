@@ -156,7 +156,29 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 				}
 
 				var parameterType = mapping.Parameter.ParameterType;
-				if (parameterType == typeof(string))
+
+				// nullable value types: empty value is null, otherwise parse as the underlying type
+				if (Nullable.GetUnderlyingType(parameterType) is { } underlyingType)
+				{
+					if (!lineReader.TryReadString(charBuffer, out var charsWritten))
+					{
+						throw new InvalidOperationException($"Error reading value of type {mapping.Parameter.ParameterType}.");
+					}
+
+					if (charsWritten == 0)
+					{
+						values[mapping.Index] = null;
+						continue;
+					}
+
+					if (!TryParseValue(underlyingType, charBuffer[..charsWritten], out var value))
+					{
+						throw new InvalidOperationException($"Error reading value of type {mapping.Parameter.ParameterType}.");
+					}
+
+					values[mapping.Index] = value;
+				}
+				else if (parameterType == typeof(string))
 				{
 					if (!lineReader.TryReadString(out var value))
 					{
@@ -218,6 +240,37 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 	}
 
 	private const int ScratchBufferLength = 128;
+
+	private static bool TryParseValue(Type type, ReadOnlySpan<char> chars, out object? value)
+	{
+		if (type == typeof(int))
+		{
+			var success = chars.TryParseAs<int>(out var parsed);
+			value = parsed;
+			return success;
+		}
+
+		if (type == typeof(long))
+		{
+			var success = chars.TryParseAs<long>(out var parsed);
+			value = parsed;
+			return success;
+		}
+
+		if (type == typeof(DateTimeOffset))
+		{
+			var success = chars.TryParseAs<DateTimeOffset>(out var parsed);
+			value = parsed;
+			return success;
+		}
+
+		if (type.IsEnum)
+		{
+			return Enum.TryParse(type, chars, ignoreCase: true, out value);
+		}
+
+		throw new NotSupportedException($"Unsupported parameter type '{type}?'");
+	}
 
 	private readonly record struct ParameterIndex(ParameterInfo? Parameter, int Index);
 

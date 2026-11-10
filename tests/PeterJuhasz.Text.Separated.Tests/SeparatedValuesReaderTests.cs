@@ -280,6 +280,46 @@ public class SeparatedValuesReaderTests
 		Assert.IsFalse(lineReader.TryReadString(buffer, out _));
 	}
 
+	[TestMethod]
+	public async Task Read_Nullable()
+	{
+		var csv = """
+			I,L,D,E
+			1,2,2026-11-10T12:34:56Z,Red
+			,,,
+			"3","",,"blue"
+			""";
+		var stream = new MemoryStream(Encoding.UTF8.GetBytes(csv));
+		var reader = new SeparatedValuesReader<TestRecordNullable>(new(HasHeader: true, Delimiter: ','));
+		var records = await reader.ReadAsync(stream, default).ToListAsync(TestContext.CancellationToken);
+		Assert.HasCount(3, records);
+		Assert.AreEqual(new TestRecordNullable(I: 1, L: 2, D: new(2026, 11, 10, 12, 34, 56, TimeSpan.Zero), E: TestColor.Red), records[0]);
+		Assert.AreEqual(new TestRecordNullable(I: null, L: null, D: null, E: null), records[1]);
+		Assert.AreEqual(new TestRecordNullable(I: 3, L: null, D: null, E: TestColor.Blue), records[2]);
+	}
+
+	[TestMethod]
+	public async Task Read_Nullable_Invalid()
+	{
+		var csv = """
+			I,L,D,E
+			x,,,
+			""";
+		var stream = new MemoryStream(Encoding.UTF8.GetBytes(csv));
+		var reader = new SeparatedValuesReader<TestRecordNullable>(new(HasHeader: true, Delimiter: ','));
+		await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+		{
+			await reader.ReadAsync(stream, default).ToListAsync(TestContext.CancellationToken);
+		});
+	}
+
+	record class TestRecordNullable(
+		int? I,
+		long? L,
+		DateTimeOffset? D,
+		TestColor? E
+	);
+
 	record class TestRecordDate(
 		int A,
 		DateTimeOffset D
