@@ -242,6 +242,49 @@ public class SeparatedValuesReaderTests
 		});
 	}
 
+	[TestMethod]
+	public async Task Read_DateTimeOffset()
+	{
+		var csv = """
+			A,D
+			1,2026-11-10T12:34:56Z
+			2,"2026-11-10T12:34:56.1230000+02:00"
+			""";
+		var stream = new MemoryStream(Encoding.UTF8.GetBytes(csv));
+		var reader = new SeparatedValuesReader<TestRecordDate>(new(HasHeader: true, Delimiter: ','));
+		var records = await reader.ReadAsync(stream, default).ToListAsync(TestContext.CancellationToken);
+		Assert.HasCount(2, records);
+		Assert.AreEqual(new TestRecordDate(A: 1, D: new(2026, 11, 10, 12, 34, 56, TimeSpan.Zero)), records[0]);
+		Assert.AreEqual(new TestRecordDate(A: 2, D: new(2026, 11, 10, 12, 34, 56, 123, TimeSpan.FromHours(2))), records[1]);
+	}
+
+	[TestMethod]
+	public void TryReadString_Span()
+	{
+		var line = new System.Buffers.ReadOnlySequence<byte>("abc,\"d\"\"e,f\",,xyz"u8.ToArray());
+		var lineReader = new Utf8SeparatedValuesLineReader(line, new(HasHeader: false, Delimiter: ','));
+		Span<char> buffer = stackalloc char[16];
+
+		Assert.IsTrue(lineReader.TryReadString(buffer, out var written));
+		Assert.AreEqual("abc", buffer[..written].ToString());
+
+		Assert.IsTrue(lineReader.TryReadString(buffer, out written));
+		Assert.AreEqual("d\"e,f", buffer[..written].ToString());
+
+		Assert.IsTrue(lineReader.TryReadString(buffer, out written));
+		Assert.AreEqual(0, written);
+
+		// destination too small
+		Assert.IsFalse(lineReader.TryReadString(buffer[..2], out _));
+
+		Assert.IsFalse(lineReader.TryReadString(buffer, out _));
+	}
+
+	record class TestRecordDate(
+		int A,
+		DateTimeOffset D
+	);
+
 	enum TestColor
 	{
 		Red,

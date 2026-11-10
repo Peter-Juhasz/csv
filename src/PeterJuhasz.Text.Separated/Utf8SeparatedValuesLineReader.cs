@@ -17,6 +17,8 @@ public ref struct Utf8SeparatedValuesLineReader
 	private readonly SeparatedValuesReaderOptions _options;
 	private State _state;
 
+	private const int StackAllocThreshold = 256;
+
 	public bool TryReadString(out string? value)
 	{
 		if (!TryReadSlot(out var slot))
@@ -31,18 +33,81 @@ public ref struct Utf8SeparatedValuesLineReader
 			return true;
 		}
 
-		if (slot.FirstSpan[0] == (byte)_options.Quote)
+		// utf-8 never decodes to more chars than bytes
+		var maxLength = (int)slot.Length;
+		char[]? rented = null;
+		var buffer = maxLength <= StackAllocThreshold
+			? stackalloc char[StackAllocThreshold]
+			: (rented = ArrayPool<char>.Shared.Rent(maxLength));
+		try
 		{
-			var length = (int)slot.Length;
-			Span<byte> span = stackalloc byte[length];
-			slot.CopyTo(span);
-			Unquote(span, out length);
-			value = Encoding.UTF8.GetString(span[..length]);
+			if (!TryDecodeSlot(slot, buffer, out var charsWritten))
+			{
+				value = default;
+				return false;
+			}
+
+			value = new string(buffer[..charsWritten]);
+			return true;
+		}
+		finally
+		{
+			if (rented is not null)
+			{
+				ArrayPool<char>.Shared.Return(rented);
+			}
+		}
+	}
+
+	/// <summary>
+	/// Reads the next value into <paramref name="destination"/>, unquoted and unescaped.
+	/// </summary>
+	/// <returns><see langword="false"/> if there are no more values, or if <paramref name="destination"/> is too small. The value is consumed in both cases.</returns>
+	public bool TryReadString(scoped Span<char> destination, out int charsWritten)
+	{
+		if (!TryReadSlot(out var slot))
+		{
+			charsWritten = 0;
+			return false;
+		}
+
+		return TryDecodeSlot(slot, destination, out charsWritten);
+	}
+
+	private readonly bool TryDecodeSlot(ReadOnlySequence<byte> slot, scoped Span<char> destination, out int charsWritten)
+	{
+		if (slot.IsEmpty)
+		{
+			charsWritten = 0;
 			return true;
 		}
 
-		value = Encoding.UTF8.GetString(slot);
-		return true;
+		// fast path: contiguous and unquoted, decode directly
+		if (slot.IsSingleSegment && slot.FirstSpan[0] != (byte)_options.Quote)
+		{
+			return Encoding.UTF8.TryGetChars(slot.FirstSpan, destination, out charsWritten);
+		}
+
+		// copy to contiguous buffer and unquote in place
+		var length = (int)slot.Length;
+		byte[]? rented = null;
+		var bytes = length <= StackAllocThreshold
+			? stackalloc byte[StackAllocThreshold]
+			: (rented = ArrayPool<byte>.Shared.Rent(length));
+		try
+		{
+			bytes = bytes[..length];
+			slot.CopyTo(bytes);
+			Unquote(bytes, out length);
+			return Encoding.UTF8.TryGetChars(bytes[..length], destination, out charsWritten);
+		}
+		finally
+		{
+			if (rented is not null)
+			{
+				ArrayPool<byte>.Shared.Return(rented);
+			}
+		}
 	}
 
 	public bool TryReadInt32(out int value)

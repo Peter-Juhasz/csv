@@ -121,6 +121,9 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 
 			values.AsSpan().Clear();
 			var lineReader = new Utf8SeparatedValuesLineReader(line, options);
+
+			// scratch buffer for parsing short values (enums, dates) without allocating a string
+			Span<char> charBuffer = stackalloc char[ScratchBufferLength];
 			SmallDictionary<string, string?>? extraValues = null;
 			for (int i = 0; i < parameterIndices.Length; i++)
 			{
@@ -182,7 +185,7 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 				}
 				else if (parameterType == typeof(DateTimeOffset))
 				{
-					if (!lineReader.TryReadString(out var valueStr) || !valueStr.TryParseAs<DateTimeOffset>(out var value))
+					if (!lineReader.TryReadString(charBuffer, out var charsWritten) || !((ReadOnlySpan<char>)charBuffer[..charsWritten]).TryParseAs<DateTimeOffset>(out var value))
 					{
 						throw new InvalidOperationException($"Error reading value of type {mapping.Parameter.ParameterType}.");
 					}
@@ -191,7 +194,7 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 				}
 				else if (parameterType.IsEnum)
 				{
-					if (!lineReader.TryReadString(out var valueStr) || !Enum.TryParse(parameterType, valueStr, ignoreCase: true, out var value))
+					if (!lineReader.TryReadString(charBuffer, out var charsWritten) || !Enum.TryParse(parameterType, charBuffer[..charsWritten], ignoreCase: true, out var value))
 					{
 						throw new InvalidOperationException($"Error reading value of type {mapping.Parameter.ParameterType}.");
 					}
@@ -213,6 +216,8 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 			yield return factory != null ? factory(values!) : (T)Activator.CreateInstance(typeof(T), args: values)!;
 		}
 	}
+
+	private const int ScratchBufferLength = 128;
 
 	private readonly record struct ParameterIndex(ParameterInfo? Parameter, int Index);
 
