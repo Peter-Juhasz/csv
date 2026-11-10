@@ -189,6 +189,15 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 
 					values[mapping.Index] = value;
 				}
+				else if (parameterType.IsEnum)
+				{
+					if (!lineReader.TryReadString(out var valueStr) || !Enum.TryParse(parameterType, valueStr, ignoreCase: true, out var value))
+					{
+						throw new InvalidOperationException($"Error reading value of type {mapping.Parameter.ParameterType}.");
+					}
+
+					values[mapping.Index] = value;
+				}
 				else
 				{
 					throw new NotSupportedException($"Unsupported parameter type '{mapping.Parameter.ParameterType}'");

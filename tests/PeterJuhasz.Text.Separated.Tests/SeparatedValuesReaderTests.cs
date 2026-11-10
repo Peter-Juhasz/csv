@@ -209,6 +209,51 @@ public class SeparatedValuesReaderTests
 	}
 
 
+	[TestMethod]
+	public async Task Read_Enum()
+	{
+		var csv = """
+			A,E
+			1,Red
+			2,green
+			3,"Blue"
+			""";
+		var stream = new MemoryStream(Encoding.UTF8.GetBytes(csv));
+		var reader = new SeparatedValuesReader<TestRecordEnum>(new(HasHeader: true, Delimiter: ','));
+		var records = await reader.ReadAsync(stream, default).ToListAsync(TestContext.CancellationToken);
+		Assert.HasCount(3, records);
+		Assert.AreEqual(new TestRecordEnum(A: 1, E: TestColor.Red), records[0]);
+		Assert.AreEqual(new TestRecordEnum(A: 2, E: TestColor.Green), records[1]);
+		Assert.AreEqual(new TestRecordEnum(A: 3, E: TestColor.Blue), records[2]);
+	}
+
+	[TestMethod]
+	public async Task Read_Enum_Invalid()
+	{
+		var csv = """
+			A,E
+			1,Purple
+			""";
+		var stream = new MemoryStream(Encoding.UTF8.GetBytes(csv));
+		var reader = new SeparatedValuesReader<TestRecordEnum>(new(HasHeader: true, Delimiter: ','));
+		await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+		{
+			await reader.ReadAsync(stream, default).ToListAsync(TestContext.CancellationToken);
+		});
+	}
+
+	enum TestColor
+	{
+		Red,
+		Green,
+		Blue,
+	}
+
+	record class TestRecordEnum(
+		int A,
+		TestColor E
+	);
+
 	record class TestRecord(
 		int A,
 		int B,
