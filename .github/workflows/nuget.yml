@@ -2,7 +2,7 @@
 
 env:
   PROJECT_NAME: 'PeterJuhasz.Text.Separated'
-  DOTNET_VERSION: '10'
+  DOTNET_VERSION: '11'
   BUILD_CONFIGURATION: 'Release'
 
 on:

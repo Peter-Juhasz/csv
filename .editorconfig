@@ -46,6 +46,12 @@ dotnet_diagnostic.CS9107.severity = none
 # The given expression is never of the provided type
 dotnet_diagnostic.CS0184.severity = error
 
+[tests/**.cs]
+# Test method names are descriptive sentences with underscores.
+dotnet_diagnostic.CA1707.severity = none
+# Test data is declared inline.
+dotnet_diagnostic.CA1861.severity = none
+
 [*.{html,cshtml,vbhtml,razor}]
 
 [*.{css,scss,sass,less}]

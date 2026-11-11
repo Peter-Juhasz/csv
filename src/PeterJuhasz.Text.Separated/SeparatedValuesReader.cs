@@ -51,7 +51,7 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 			{
 				if (headerName.IsNullOrWhiteSpace())
 				{
-					throw new Exception("Empty header");
+					throw new InvalidOperationException("Empty header");
 				}
 
 				if (options.UnknownColumns is SeparatedValuesReaderOptions.UnknownColumnHandling.LoadIntoExtraValues)
@@ -158,7 +158,7 @@ public class SeparatedValuesReader<T>(SeparatedValuesReaderOptions options, Func
 				var parameterType = mapping.Parameter.ParameterType;
 
 				// nullable value types: empty value is null, otherwise parse as the underlying type
-				if (Nullable.GetUnderlyingType(parameterType) is { } underlyingType)
+				if (parameterType.GetNullableUnderlyingType() is { } underlyingType)
 				{
 					if (!lineReader.TryReadString(charBuffer, out var charsWritten))
 					{

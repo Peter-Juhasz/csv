@@ -313,14 +313,14 @@ public class SeparatedValuesReaderTests
 		});
 	}
 
-	record class TestRecordNullable(
+	sealed record class TestRecordNullable(
 		int? I,
 		long? L,
 		DateTimeOffset? D,
 		TestColor? E
 	);
 
-	record class TestRecordDate(
+	sealed record class TestRecordDate(
 		int A,
 		DateTimeOffset D
 	);
@@ -332,19 +332,19 @@ public class SeparatedValuesReaderTests
 		Blue,
 	}
 
-	record class TestRecordEnum(
+	sealed record class TestRecordEnum(
 		int A,
 		TestColor E
 	);
 
-	record class TestRecord(
+	sealed record class TestRecord(
 		int A,
 		int B,
 		int C,
 		string? S = null
 	);
 
-	record class TestRecordExtra(
+	sealed record class TestRecordExtra(
 		int A,
 		int B,
 		int C,
